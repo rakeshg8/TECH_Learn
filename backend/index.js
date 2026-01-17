@@ -106,10 +106,13 @@ app.post("/api/embeddings", async (req, res) => {
     if (workspace_id) {
       tableName = "embeddings";
       parentIdField = "workspace_id";
+      console.log(`[EMBEDDINGS] Using embeddings table with workspace_id=${workspace_id}`);
     } else if (quick_study_id) {
       tableName = "quick_embeddings";
       parentIdField = "quick_study_id";
+      console.log(`[EMBEDDINGS] Using quick_embeddings table with quick_study_id=${quick_study_id}`);
     } else {
+      console.error("[EMBEDDINGS] ❌ No workspace_id or quick_study_id provided");
       return res.status(400).json({ error: "No workspace_id or quick_study_id provided" });
     }
     // ✅ 2. Store in Supabase
@@ -123,7 +126,7 @@ app.post("/api/embeddings", async (req, res) => {
     });
 
     if (error) {
-      console.error("Supabase insert error:", error);
+      console.error(`[EMBEDDINGS] ❌ Supabase insert error for ${parentIdField}=${workspace_id || quick_study_id}:`, error);
       return res.status(500).json({ error: error.message });
     }
     
