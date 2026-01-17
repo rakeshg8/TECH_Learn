@@ -32,13 +32,24 @@ export default function WorkspaceList() {
   async function createWorkspace(e) {
     e.preventDefault();
     if (!title.trim()) return alert('Enter title');
+    
+    console.log(`[WORKSPACE] Creating workspace for user_id=${user.id}`);
+    console.log(`[WORKSPACE] Title: ${title}, Description: ${desc}`);
+    
     const { data, error } = await supabase.from('workspaces').insert([{
       user_id: user.id,
       title: title.trim(),
       description: desc.trim()
     }]).select().single();
 
-    if (error) return alert(error.message);
+    if (error) {
+      console.error(`[WORKSPACE] ❌ Creation error:`, error);
+      return alert(error.message);
+    }
+    
+    console.log(`[WORKSPACE] ✅ Created successfully with id=${data.id}`);
+    console.log(`[WORKSPACE] Workspace object:`, data);
+    
     setTitle('');
     setDesc('');
     nav(`/workspace/${data.id}`);
