@@ -6,7 +6,7 @@ import cors from "cors";
 dotenv.config();
 const app = express();
 app.use(cors({
-  origin: ["http://localhost:5173", "https://smart-study-buddy-six.vercel.app","https://tech-learn-sandy.vercel.app"],
+  origin: ["http://localhost:5173", "https://smart-study-buddy-six.vercel.app","https://tech-learn-sandy.vercel.app", "https://tech-learn-fsn6.vercel.app"],
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
@@ -187,5 +187,6 @@ const scored = rows.map((r) => {
 
 // ✅ Vercel export (no app.listen)
 export default app;
+
 
 
