@@ -6,7 +6,7 @@ export default function ChatBox({ workspaceId }) {
 
   const ask = async () => {
     setMessages(prev => [...prev, { role:'user', text: q }]);
-    const res = await fetch('/api/query', {
+    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query/api/query', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ workspace_id: workspaceId, question: q })
@@ -33,4 +33,5 @@ export default function ChatBox({ workspaceId }) {
       </div>
     </div>
   );
+
 }
