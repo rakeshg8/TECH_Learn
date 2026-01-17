@@ -57,10 +57,17 @@ app.post("/api/embeddings", async (req, res) => {
     document_id,
     page_number,
     chunk_text } = req.body;
-  if (!chunk_text) return res.status(400).json({ error: "Missing chunk_text" });
+  
+  console.log(`[EMBEDDINGS] Received request - workspace_id=${workspace_id}, quick_study_id=${quick_study_id}, doc=${document_id}`);
+  
+  if (!chunk_text) {
+    console.error("[EMBEDDINGS] Missing chunk_text in request body");
+    return res.status(400).json({ error: "Missing chunk_text" });
+  }
 
   try {
     // ✅ 1. Get embeddings from Cohere (v2 API)
+    console.log("[EMBEDDINGS] Calling Cohere API...");
     const embResp = await fetch("https://api.cohere.ai/v2/embed", {
       method: "POST",
       headers: {
@@ -76,15 +83,24 @@ app.post("/api/embeddings", async (req, res) => {
 
     console.log("Cohere response status:", embResp.status);
     const embJson = await embResp.json();
-    console.log("Cohere response JSON:", embJson);
+    console.log("Cohere response JSON:", JSON.stringify(embJson).substring(0, 200));
 
    const embedding = embJson.embeddings?.float?.[0];
 
+    if (!embResp.ok) {
+      console.error("[EMBEDDINGS] ❌ Cohere API error:", embJson);
+      return res.status(embResp.status).json({ 
+        error: embJson.message || "Cohere API error", 
+        details: embJson 
+      });
+    }
 
     if (!embedding) {
-      console.error("Cohere embedding error:", embJson);
-      return res.status(500).json({ error: "Failed to generate embedding" });
+      console.error("[EMBEDDINGS] ❌ No embedding returned from Cohere:", embJson);
+      return res.status(500).json({ error: "Failed to generate embedding - no data returned" });
     }
+    
+    console.log(`[EMBEDDINGS] ✅ Cohere embedding generated (${embedding.length} dimensions)`);
  // 2️⃣ Determine target table
     let tableName, parentIdField;
     if (workspace_id) {
@@ -97,6 +113,7 @@ app.post("/api/embeddings", async (req, res) => {
       return res.status(400).json({ error: "No workspace_id or quick_study_id provided" });
     }
     // ✅ 2. Store in Supabase
+    console.log(`[EMBEDDINGS] Storing embedding for ${parentIdField}=${workspace_id || quick_study_id}, doc=${document_id}`);
        const { error } = await supabase.from(tableName).insert({
       [parentIdField]: workspace_id || quick_study_id,
       document_id,
@@ -109,7 +126,8 @@ app.post("/api/embeddings", async (req, res) => {
       console.error("Supabase insert error:", error);
       return res.status(500).json({ error: error.message });
     }
-
+    
+    console.log(`[EMBEDDINGS] ✅ Embedding stored successfully for ${parentIdField}=${workspace_id || quick_study_id}`);
     res.json({ ok: true });
   } catch (err) {
     console.error("Embedding handler failed:", err);
@@ -151,13 +169,18 @@ const tableName = workspace_id ? "embeddings" : "quick_embeddings";
 const parentIdField = workspace_id ? "workspace_id" : "quick_study_id";
 
 // 2️⃣ Fetch embeddings from Supabase
+console.log(`[QUERY] Fetching embeddings from ${tableName} where ${parentIdField}=${parentIdValue}`);
 const { data: rows, error: fetchErr } = await supabase
   .from(tableName)
   .select("id, chunk_text, page_number, embedding")
   .eq(parentIdField, parentIdValue);
 
+console.log(`[QUERY] Query result - rows: ${rows?.length}, error: ${fetchErr?.message}`);
 if (fetchErr) throw new Error(fetchErr.message);
-if (!rows?.length) throw new Error("No embeddings found for this workspace/study");
+if (!rows?.length) {
+  console.error(`[QUERY] ⚠️ No embeddings found! workspace_id=${workspace_id}, quick_study_id=${quick_study_id}`);
+  throw new Error(`No embeddings found. Please upload and process documents first. (workspace_id=${workspace_id}, quick_study_id=${quick_study_id})`);
+}
 
 
     // 3️⃣ Compute cosine similarity
