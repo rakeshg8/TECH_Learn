@@ -14,6 +14,7 @@ const allowedOrigins = [
   "https://tech-learn-sandy.vercel.app"
 ];
 
+
 app.use(
   cors({
     origin: function (origin, callback) {
@@ -120,9 +121,12 @@ console.log("GEMINI_API_KEY present:", !!process.env.GEMINI_API_KEY);
 // ============ Query API ============
 app.post("/api/query", async (req, res) => {
   const { workspace_id, quick_study_id, question, mode } = req.body;
+  const startTime = Date.now();
 
   try {
     // 1️⃣ Create embedding for the question using Cohere
+    console.log("[QUERY] Starting question embedding...");
+    const embStart = Date.now();
     const embResp = await fetch("https://api.cohere.ai/v1/embed", {
       method: "POST",
       headers: {
@@ -138,6 +142,7 @@ app.post("/api/query", async (req, res) => {
 
     const embJson = await embResp.json();
     const qVec = embJson.embeddings?.float?.[0] || embJson.embeddings?.[0];
+    console.log(`[QUERY] Question embedding done in ${Date.now() - embStart}ms`);
     if (!qVec) throw new Error("Failed to generate question embedding");
         // 2️⃣ Select correct embedding table
 // 2️⃣ Determine correct table, column, and parent ID
@@ -150,11 +155,14 @@ const tableName = workspace_id ? "embeddings" : "quick_embeddings";
 const parentIdField = workspace_id ? "workspace_id" : "quick_study_id";
 
 // 2️⃣ Fetch embeddings from Supabase
+console.log(`[QUERY] Fetching embeddings from ${tableName}...`);
+const dbStart = Date.now();
 const { data: rows, error: fetchErr } = await supabase
   .from(tableName)
   .select("id, chunk_text, page_number, embedding")
   .eq(parentIdField, parentIdValue);
 
+console.log(`[QUERY] Fetched ${rows?.length} embeddings in ${Date.now() - dbStart}ms`);
 if (fetchErr) throw new Error(fetchErr.message);
 if (!rows?.length) throw new Error("No embeddings found for this workspace/study");
 
@@ -234,6 +242,8 @@ ${contextText}
     }
 
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
+    console.log(`[QUERY] Calling Gemini LLM with model: gemini-2.0-flash`);
+    const geminiStart = Date.now();
     
     let llmResp;
     try {
@@ -255,6 +265,7 @@ ${contextText}
       return res.status(503).json({ error: "Gemini API temporarily unavailable" });
     }
 
+    console.log(`[QUERY] Gemini response received in ${Date.now() - geminiStart}ms`);
     const llmJson = await llmResp.json();
     console.log("Gemini LLM response:", llmJson);
 
@@ -305,8 +316,9 @@ let cleanAnswer = answer
         score: t.score,
       })),
     });
+    console.log(`[QUERY] Total request time: ${Date.now() - startTime}ms`);
   } catch (err) {
-    console.error("Query error:", err);
+    console.error("Query error:", err, `(after ${Date.now() - startTime}ms)`);
     res.status(500).json({ error: err.message });
   }
 });
@@ -341,4 +353,3 @@ app.post("/api/stress-mode", async (req, res) => {
 });
 // ✅ Vercel export (no app.listen)
 export default app;
-
