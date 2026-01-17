@@ -1,379 +1,571 @@
-import express from "express";
-import fetch from "node-fetch";
-import { createClient } from "@supabase/supabase-js";
-import dotenv from "dotenv";
-import cors from "cors";
-dotenv.config();
-const app = express();
-const allowedOrigins = [
-  "http://localhost:5173",
-   "http://localhost:5174",
-  "https://smart-study-buddy.vercel.app",
-  "https://smart-study-buddy-six.vercel.app",
-  "https://smart-study-buddy-yt58.vercel.app",
-  "https://tech-learn-sandy.vercel.app"
-];
+// src/pages/WorkspaceView.jsx
+import React, { useEffect, useState, useContext, useRef } from 'react';
+import { useParams } from 'react-router-dom';
+import { supabase } from '../supabase/client';
+import { AuthContext } from '../context/AuthContext';
+import { extractTextFromPDF } from '../utils/pdfUtils';
+import { chunkText } from '../utils/chunker';
+import { extractTextFromHandwritten } from '../utils/ocrUtils';
+import { useNavigate } from "react-router-dom";
+export default function WorkspaceView() {
+  const { id } = useParams(); // workspace id
+  const { user } = useContext(AuthContext);
+  const [workspace, setWorkspace] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [messages, setMessages] = useState([]); // chat messages
+  const [query, setQuery] = useState('');
+  const [activeTab, setActiveTab] = useState('chat'); // chat | exam | notes | concept
+  const timerRef = useRef(null);
+  const startTimeRef = useRef(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+const [selectedDoc, setSelectedDoc] = useState(null);
+const navigate = useNavigate();
 
+  useEffect(() => {
+    if (!id) return;
+    fetchWorkspace();
+  }, [id]);
+useEffect(() => {
+  if (!id || !user) return;
+  fetchChatHistory();
+}, [id, user]);
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Allow server-to-server and local tools (like curl, Postman)
-      if (!origin) return callback(null, true);
+async function fetchChatHistory() {
+  const { data, error } = await supabase
+    .from('chat_history')
+    .select('*')
+    .eq('workspace_id', id)
+    .order('ts', { ascending: true });
 
-      // ✅ Allow all Vercel preview URLs dynamically
-      if (
-        allowedOrigins.includes(origin) ||
-        /\.vercel\.app$/.test(origin)
-      ) {
-        return callback(null, true);
+  if (!error && data) {
+    setMessages(
+      data.map(d => ({
+        role: d.role,
+        text: d.text,
+        sources: d.sources || null,
+        ts: new Date(d.ts).getTime(),
+      }))
+    );
+  }
+}
+
+  useEffect(() => {
+    // start reading timer on mount
+    startTimer();
+    return () => stopTimerAndSave();
+    // eslint-disable-next-line
+  }, [id]);
+// --- replace fetchWorkspace, stopTimerAndSave, handleFileInput with these ---
+
+async function fetchWorkspace() {
+  setLoading(true);
+  const { data, error } = await supabase
+    .from('workspaces')
+    .select('*')
+    .eq('id', id)
+    .single();
+  if (error) {
+    console.error('fetchWorkspace error', error);
+    setLoading(false);
+    return null; // return null on error
+  }
+  setWorkspace(data);
+  setLoading(false);
+  return data; // return workspace so callers can await it
+}
+
+// Timer functions
+function startTimer() {
+  startTimeRef.current = Date.now();
+  timerRef.current = setInterval(() => {
+    // can update UI every minute if you want
+  }, 60 * 1000);
+}
+async function stopTimerAndSave() {
+  clearInterval(timerRef.current);
+  const elapsed = Math.floor((Date.now() - (startTimeRef.current || Date.now())) / 1000);
+  if (!elapsed || elapsed <= 0) return;
+
+  // ensure workspace is loaded
+  let ws = workspace;
+  if (!ws) {
+    ws = await fetchWorkspace();
+    if (!ws) return; // can't proceed
+  }
+
+  // ownership check (prevent RLS violation)
+  if (!user || ws.user_id !== user.id) {
+    console.warn('Not inserting progress — current user is not workspace owner.');
+    return;
+  }
+
+  // Prefer RPC (requires you to have this function created server-side as SECURITY DEFINER).
+  try {
+    const { data: rpcData, error: rpcError } = await supabase
+      .rpc('increment_progress_time', {
+        p_workspace_id: id,
+        p_seconds: elapsed
+      });
+    if (rpcError) {
+      // If rpc fails, fall back to direct insert (ownership already validated)
+      console.warn('increment_progress_time rpc failed, falling back to client insert', rpcError);
+      await supabase.from('progress').insert({
+        workspace_id: id,
+        time_spent_seconds: elapsed,
+        last_active: new Date().toISOString()
+      }).throwOnError();
+    } else {
+      // rpc succeeded — nothing else to do
+    }
+  } catch (err) {
+    // Final fallback insert attempt (should not reach here normally)
+    console.error('progress insert fallback error', err);
+    try {
+      await supabase.from('progress').insert({
+        workspace_id: id,
+        time_spent_seconds: elapsed,
+        last_active: new Date().toISOString()
+      });
+    } catch (insertErr) {
+      console.error('final insert failed', insertErr);
+    }
+  }
+}
+
+async function handleFileInput(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  setUploadProgress(10); // show start progress
+  
+  console.log(`[UPLOAD] Starting upload for workspace_id=${id}`);
+  
+  // Ensure workspace is loaded and owned
+  let ws = workspace;
+  if (!ws) {
+    ws = await fetchWorkspace();
+    if (!ws) {
+      alert('Workspace could not be loaded. Try again.');
+      return;
+    }
+  }
+  if (!user || ws.user_id !== user.id) {
+    alert('You cannot upload files to a workspace you do not own.');
+    return;
+  }
+  
+  console.log(`[UPLOAD] Workspace verified: id=${id}, user_id=${user.id}`);
+
+  // 1. upload raw file to Supabase storage
+  const ext = file.name.split('.').pop();
+  const path = `${id}/${Date.now()}.${ext}`;
+    setUploadProgress(30);
+  const { data: upData, error: upErr } = await supabase.storage.from('documents').upload(path, file);
+  if (upErr) { alert(upErr.message); return; }
+
+  const publicUrl = supabase.storage.from('documents').getPublicUrl(path).data.publicUrl;
+  setUploadProgress(50);
+  // 2. create document record (ownership already checked)
+  const { data: doc, error: docErr } = await supabase.from('documents').insert({
+    workspace_id: id,
+    file_url: publicUrl,
+    filename: file.name
+  }).select().single();
+
+  if (docErr) { console.error('documents insert error', docErr); alert(docErr.message); return; }
+  setUploadProgress(70);
+  // 3. extract text pages and chunk them, then call serverless /api/embeddings for each chunk
+
+  const pages = await extractTextFromPDF(file); // returns [{pageNumber, text}]
+  let totalChunks = 0;
+  let processedChunks = 0;
+  let failedChunks = 0;
+  for (const p of pages) totalChunks += chunkText(p.text, 200).length;
+  
+  for (const p of pages) {
+    const chunks = chunkText(p.text, 200);
+    for (const chunk of chunks) {
+      try {
+        // call server endpoint to create embedding and store vector
+        const embRes = await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            workspace_id: id,
+            document_id: doc.id,
+            page_number: p.pageNumber,
+            chunk_text: chunk
+          })
+        });
+        const embJson = await embRes.json();
+        if (!embRes.ok) {
+          console.error(`[UPLOAD] ❌ Embedding error for chunk (page ${p.pageNumber}):`, embJson.error);
+          failedChunks++;
+        } else {
+          console.log(`[UPLOAD] ✅ Embedded chunk from page ${p.pageNumber}`);
+        }
+      } catch (err) {
+        console.error(`[UPLOAD] ❌ Network error for chunk (page ${p.pageNumber}):`, err);
+        failedChunks++;
       }
+      processedChunks++;
+      console.log(`Progress: ${Math.round((processedChunks / totalChunks) * 100)}%`);
+    }
+  }
+  
+  setUploadProgress(100);
+  setTimeout(() => setUploadProgress(0), 2000);
+  
+  if (failedChunks > 0) {
+    alert(`Upload completed with ${failedChunks} failed embeddings out of ${totalChunks}. Check console for details.`);
+  } else {
+    alert('File uploaded and processed (embeddings created).');
+  }
+}
 
-      console.error("❌ CORS blocked for origin:", origin);
-      return callback(new Error("CORS not allowed for this origin"));
-    },
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  })
+
+async function handleHandwrittenInput(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  setUploadProgress(10);
+
+  let ws = workspace;
+  if (!ws) ws = await fetchWorkspace();
+  if (!ws) return alert('Workspace could not be loaded.');
+  if (!user || ws.user_id !== user.id) {
+    alert('You cannot upload files to a workspace you do not own.');
+    return;
+  }
+
+  // Upload file to Supabase Storage
+  const ext = file.name.split('.').pop();
+  const path = `${id}/handwritten_${Date.now()}.${ext}`;
+  const { data: upData, error: upErr } = await supabase.storage.from('documents').upload(path, file);
+  if (upErr) return alert(upErr.message);
+
+  const publicUrl = supabase.storage.from('documents').getPublicUrl(path).data.publicUrl;
+  setUploadProgress(30);
+
+  // Create DB record
+  const { data: doc, error: docErr } = await supabase.from('documents').insert({
+    workspace_id: id,
+    file_url: publicUrl,
+    filename: file.name,
+    type: 'handwritten'
+  }).select().single();
+
+  if (docErr) return alert(docErr.message);
+  setUploadProgress(50);
+
+  // Extract text using OCR
+  const extractedText = await extractTextFromHandwritten(file);
+  setUploadProgress(70);
+
+  // Split and send to embeddings API
+  const chunks = chunkText(extractedText, 200);
+  let processed = 0;
+  for (const chunk of chunks) {
+    await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workspace_id: id,
+        document_id: doc.id,
+        page_number: 1,
+        chunk_text: chunk,
+      }),
+    });
+    processed++;
+    setUploadProgress(Math.round(70 + (processed / chunks.length) * 30));
+  }
+
+  setUploadProgress(100);
+  setTimeout(() => setUploadProgress(0), 2000);
+  alert('Handwritten notes uploaded and processed successfully!');
+}
+
+  // Chat ask (calls /api/query)
+  async function askQuestion() {
+    if (!query.trim()) return;
+    const uMsg = { role: 'user', text: query, ts: Date.now() };
+    setMessages(prev => [...prev, uMsg]);
+    setQuery('');
+      // ✅ Save user message in DB
+  await supabase.from('chat_history').insert({
+    workspace_id: id,
+    user_id: user.id,
+    role: 'user',
+    text: uMsg.text,
+  });
+  try {
+
+    // call server
+    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ workspace_id: id, question: uMsg.text })
+    });
+    const json = await res.json();
+    const assistantMsg = { role: 'assistant', text: json.answer, sources: json.sources, ts: Date.now() };
+    setMessages(prev => [...prev, assistantMsg]);
+    await supabase.from('chat_history').insert({
+      workspace_id: id,
+      user_id: user.id,
+      role: 'assistant',
+      text: json.answer,
+      sources: json.sources || null,
+    });
+
+  } catch (err) {
+    console.error("Error asking question:", err);
+  }
+  }
+
+  if (loading) return <div>Loading workspace...</div>;
+  if (!workspace) return <div>Workspace not found.</div>;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-black to-gray-950 text-gray-200 py-10 px-6 flex justify-center items-start">
+  <div className="w-full max-w-6xl">
+
+      <div className="flex justify-between items-start gap-4 bg-[#0f1628]/70 p-5 rounded-2xl border border-gray-800 shadow-md mb-6">
+        <div>
+          <h2 className="text-3xl font-bold bg-gradient-to-r from-indigo-400 to-purple-500 bg-clip-text text-transparent">{workspace.title}</h2>
+          <p className="text-sm text-gray-600">{workspace.description}</p>
+        </div>
+        <div className="text-xs text-gray-500">Workspace ID: {workspace.id}</div>
+      </div>
+
+      <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="md:col-span-2 p-6 bg-[#0e1629]/80 backdrop-blur-lg rounded-2xl border border-gray-800 shadow-xl">
+          {uploadProgress > 0 && (
+  <div className="w-full bg-gray-200 rounded mb-3 h-3 overflow-hidden">
+    <div
+      className="bg-gradient-to-r from-indigo-500 to-purple-600 h-3 rounded transition-all duration-300"
+      style={{ width: `${uploadProgress}%` }}
+    />
+  </div>
+)}
+
+          <div className="mb-6 flex flex-wrap gap-3 justify-center">
+            <label className="btn" htmlFor="fileInput">Upload PDF</label>
+            <label className="btn" htmlFor="handwrittenInput">Upload Handwritten Notes</label>
+<input
+  id="handwrittenInput"
+  type="file"
+  accept="application/pdf,image/*"
+  onChange={handleHandwrittenInput}
+  className="hidden"
+/>
+
+            <input id="fileInput" type="file" accept="application/pdf" onChange={handleFileInput} className="hidden" />
+            
+            <button
+  className="btn"
+  onClick={() => navigate(`/workspace/${id}/exam`)}
+>
+  Exam Mode
+</button>
+            <button className="btn-ghost" onClick={() => setActiveTab('notes')}>Notes Summarizer</button>
+            <button className="btn-ghost" onClick={() => setActiveTab('concept')}>Concept Tracker</button>
+          </div>
+{selectedDoc && (
+  <div className="mb-4 border rounded overflow-hidden relative">
+    {/* Close button */}
+    <button
+      onClick={() => setSelectedDoc(null)}
+      className="absolute top-2 right-2 bg-red-500 text-white px-3 py-1 text-sm rounded hover:bg-red-600 transition"
+    >
+      ✕ Close PDF
+    </button>
+
+    {/* PDF viewer */}
+    <iframe
+      src={selectedDoc.file_url}
+      title="PDF Viewer"
+      className="w-full h-[500px] border-none"
+    />
+  </div>
+)}
+
+
+          {/* Tabs */}
+          {activeTab === 'chat' && (
+            <div>
+              <div className="chat-window mb-4 space-y-3" style={{ maxHeight: 420, overflow: 'auto' }}>
+                {messages.map((m, i) => (
+                  <div key={i} className={m.role === 'user' ? 'text-right' : 'text-left'}>
+                    <div
+  className={`inline-block p-3 rounded-xl shadow-sm text-gray-900 ${
+    m.role === 'user' ? 'bg-white border border-blue-200' : 'bg-white border border-gray-200'
+  }`}
+>
+  <div
+    className="text-gray-800"
+    dangerouslySetInnerHTML={{ __html: (m.text || '').replace(/\n/g, '<br/>') }}
+  />
+</div>
+
+                    {m.sources && <div className="text-xs text-gray-500 mt-1">Sources: {m.sources.map(s => `Page ${s.page}`).join(', ')}</div>}
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex gap-2">
+                <input className="flex-1 p-2 border rounded" value={query} onChange={e => setQuery(e.target.value)} placeholder="Ask about your notes..." />
+                <button onClick={askQuestion} className="btn">Ask</button>
+                <button
+  onClick={async () => {
+    await supabase.from('chat_history').delete().eq('workspace_id', id);
+    setMessages([]);
+  }}
+  className="btn-ghost text-red-400"
+>
+  🗑️ Clear Chat
+</button>
+
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'exam' && (
+            <div>
+              <h3 className="font-semibold mb-2">Exam Mode</h3>
+              <p className="text-sm text-gray-600 mb-3">Generate timed quiz from this workspace (use the "Generate Quiz" button).</p>
+              <button className="btn" onClick={async () => {
+                const resp = await fetch('https://smart-study-buddy-six.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::generate_quiz::', mode: 'quiz' }) });
+                const j = await resp.json();
+                alert('Quiz generated in chat. Open Chat tab to view questions.');
+                setActiveTab('chat');
+                setMessages(prev => [...prev, { role:'assistant', text: j.answer, sources: j.sources }]);
+              }}>Generate Quiz</button>
+            </div>
+          )}
+
+          {activeTab === 'notes' && (
+            <div>
+              <h3 className="font-semibold mb-2">Smart Notes Summarizer</h3>
+              <p className="text-sm text-gray-600 mb-3">Summarize uploaded notes or OCR images.</p>
+              <button className="btn" onClick={async () => {
+                const resp = await fetch('https://smart-study-buddy-six.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::summarize_notes::', mode: 'summarize' }) });
+                const j = await resp.json();
+                setActiveTab('chat'); // show summary in chat
+                setMessages(prev => [...prev, { role:'assistant', text: j.answer }]);
+              }}>Summarize Notes</button>
+            </div>
+          )}
+
+          {activeTab === 'concept' && (
+            <div>
+              <h3 className="font-semibold mb-2">Concept Evolution Tracker</h3>
+              <p className="text-sm text-gray-600">Compare how your understanding changed as you added documents.</p>
+              <button className="btn" onClick={async () => {
+                const resp = await fetch('https://smart-study-buddy-six.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::concept_evolution::', mode: 'concept' }) });
+                const j = await resp.json();
+                setActiveTab('chat');
+                setMessages(prev => [...prev, { role:'assistant', text: j.answer }]);
+              }}>Generate Evolution Insight</button>
+            </div>
+          )}
+        </div>
+
+        <aside className="p-6 bg-[#10172b]/80 backdrop-blur-lg rounded-2xl border border-gray-800 shadow-lg">
+          <h4 className="font-semibold">Workspace Summary</h4>
+          <p className="text-sm text-gray-600 mb-3">Uploaded documents and progress will appear here.</p>
+
+          <div className="mb-4">
+            <h5 className="text-sm font-medium">Documents</h5>
+            <DocumentList workspaceId={id} setSelectedDoc={setSelectedDoc} selectedDoc={selectedDoc} />
+          </div>
+
+          <div className="mb-4">
+            <h5 className="text-sm font-medium">Reading & Progress</h5>
+            <ProgressWidget workspaceId={id} />
+          </div>
+
+          <div>
+            <h5 className="text-sm font-medium">Stress-Free Mode</h5>
+            <MotivationMini workspaceId={id} />
+          </div>
+        </aside>
+      </div>
+      </div>
+    </div>
+  );
+}
+
+/* Helper components (lightweight inline) */
+
+function DocumentList({ workspaceId, setSelectedDoc, selectedDoc }) {
+  const [docs, setDocs] = useState([]);
+  useEffect(() => { fetchDocs(); }, [workspaceId]);
+  async function fetchDocs() {
+    const { data } = await supabase.from('documents').select('*').eq('workspace_id', workspaceId).order('uploaded_at', { ascending: false });
+    setDocs(data || []);
+  }
+  return (
+  <div className="space-y-2">
+    {docs.map(d => (
+      <div
+        key={d.id}
+        onClick={() => setSelectedDoc(d)}
+        className={`cursor-pointer text-sm p-2 rounded border ${
+          selectedDoc?.id === d.id ? 'bg-blue-50 border-blue-400' : 'border-gray-200 hover:bg-gray-50'
+        }`}
+      >
+        📄 {d.filename}
+      </div>
+    ))}
+    {docs.length === 0 && <div className="text-xs text-gray-500">No documents yet.</div>}
+  </div>
 );
 
-// ✅ Handle preflight requests
-app.options("*", cors());
-
-app.use(express.json());
-
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const COHERE_API_KEY = process.env.COHERE_API_KEY;
-const OPENROUTER_API_KEY=process.env.OPENROUTER_API_KEY
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-app.get("/", (req, res) => res.send("Smart Study Buddy API running ✅"));
-
-app.post("/api/embeddings", async (req, res) => {
-  const {workspace_id,
-    quick_study_id,
-    document_id,
-    page_number,
-    chunk_text } = req.body;
-  
-  console.log(`[EMBEDDINGS] Received request - workspace_id=${workspace_id}, quick_study_id=${quick_study_id}, doc=${document_id}`);
-  
-  if (!chunk_text) {
-    console.error("[EMBEDDINGS] Missing chunk_text in request body");
-    return res.status(400).json({ error: "Missing chunk_text" });
-  }
-
-  try {
-    // ✅ 1. Get embeddings from Cohere (v2 API)
-    console.log("[EMBEDDINGS] Calling Cohere API...");
-    const embResp = await fetch("https://api.cohere.ai/v2/embed", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${COHERE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "embed-english-v3.0", // ✅ correct model
-        texts: [chunk_text],
-        input_type: "search_document", // ✅ required for v3.0
-      }),
-    });
-
-    console.log("Cohere response status:", embResp.status);
-    const embJson = await embResp.json();
-    console.log("Cohere response JSON:", JSON.stringify(embJson).substring(0, 200));
-
-   const embedding = embJson.embeddings?.float?.[0];
-
-    if (!embResp.ok) {
-      console.error("[EMBEDDINGS] ❌ Cohere API error:", embJson);
-      return res.status(embResp.status).json({ 
-        error: embJson.message || "Cohere API error", 
-        details: embJson 
-      });
-    }
-
-    if (!embedding) {
-      console.error("[EMBEDDINGS] ❌ No embedding returned from Cohere:", embJson);
-      return res.status(500).json({ error: "Failed to generate embedding - no data returned" });
-    }
-    
-    console.log(`[EMBEDDINGS] ✅ Cohere embedding generated (${embedding.length} dimensions)`);
- // 2️⃣ Determine target table
-    let tableName, parentIdField;
-    if (workspace_id) {
-      tableName = "embeddings";
-      parentIdField = "workspace_id";
-      console.log(`[EMBEDDINGS] Using embeddings table with workspace_id=${workspace_id}`);
-    } else if (quick_study_id) {
-      tableName = "quick_embeddings";
-      parentIdField = "quick_study_id";
-      console.log(`[EMBEDDINGS] Using quick_embeddings table with quick_study_id=${quick_study_id}`);
-    } else {
-      console.error("[EMBEDDINGS] ❌ No workspace_id or quick_study_id provided");
-      return res.status(400).json({ error: "No workspace_id or quick_study_id provided" });
-    }
-    // ✅ 2. Store in Supabase
-    console.log(`[EMBEDDINGS] Storing embedding for ${parentIdField}=${workspace_id || quick_study_id}, doc=${document_id}`);
-    
-    // TEMP: Try insert without foreign key validation by ignoring certain constraints
-    const { error } = await supabase.from(tableName).insert({
-      [parentIdField]: workspace_id || quick_study_id,
-      document_id,
-      chunk_text,
-      page_number,
-      embedding,
-    });
-
-    if (error) {
-      // If foreign key error, log workspace check
-      if (error.message.includes("foreign key")) {
-        console.error(`[EMBEDDINGS] ❌ Foreign key error! Workspace may not exist in DB. workspace_id=${workspace_id}`);
-        console.error(`[EMBEDDINGS] 🔍 Please verify workspace exists in Supabase > workspaces table`);
-      }
-      console.error(`[EMBEDDINGS] ❌ Supabase insert error for ${parentIdField}=${workspace_id || quick_study_id}:`, error);
-      return res.status(500).json({ error: error.message });
-    }
-    
-    console.log(`[EMBEDDINGS] ✅ Embedding stored successfully for ${parentIdField}=${workspace_id || quick_study_id}`);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("Embedding handler failed:", err);
-    res.status(500).json({ error: err.message });
-  }
-});
-console.log("OPENROUTER_API_KEY:", !!process.env.OPENROUTER_API_KEY);
-
-// ============ Query API ============
-app.post("/api/query", async (req, res) => {
-  const { workspace_id, quick_study_id, question, mode } = req.body;
-
-  try {
-    // 1️⃣ Create embedding for the question using Cohere
-    const embResp = await fetch("https://api.cohere.ai/v1/embed", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${COHERE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "embed-english-v3.0",
-        texts: [question],
-        input_type: "search_query",
-      }),
-    });
-
-    const embJson = await embResp.json();
-    const qVec = embJson.embeddings?.float?.[0] || embJson.embeddings?.[0];
-    if (!qVec) throw new Error("Failed to generate question embedding");
-        // 2️⃣ Select correct embedding table
-// 2️⃣ Determine correct table, column, and parent ID
-const parentIdValue = workspace_id || quick_study_id;
-if (!parentIdValue) {
-  return res.status(400).json({ error: "No workspace_id or quick_study_id provided" });
 }
 
-const tableName = workspace_id ? "embeddings" : "quick_embeddings";
-const parentIdField = workspace_id ? "workspace_id" : "quick_study_id";
-
-// 2️⃣ Fetch embeddings from Supabase
-console.log(`[QUERY] Fetching embeddings from ${tableName} where ${parentIdField}=${parentIdValue}`);
-const { data: rows, error: fetchErr } = await supabase
-  .from(tableName)
-  .select("id, chunk_text, page_number, embedding")
-  .eq(parentIdField, parentIdValue);
-
-console.log(`[QUERY] Query result - rows: ${rows?.length}, error: ${fetchErr?.message}`);
-if (fetchErr) throw new Error(fetchErr.message);
-if (!rows?.length) {
-  console.error(`[QUERY] ⚠️ No embeddings found! workspace_id=${workspace_id}, quick_study_id=${quick_study_id}`);
-  throw new Error(`No embeddings found. Please upload and process documents first. (workspace_id=${workspace_id}, quick_study_id=${quick_study_id})`);
-}
-
-
-    // 3️⃣ Compute cosine similarity
-    const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
-    const norm = (a) => Math.sqrt(a.reduce((s, x) => s + x * x, 0));
-    const cosine = (a, b) => dot(a, b) / (norm(a) * norm(b) + 1e-10);
-
-   // 3️⃣ Compute similarity
-const scored = rows.map((r) => {
-  // Parse the embedding (string or object) into an array
-  let emb = r.embedding;
-  if (typeof emb === "string") {
-    try {
-      emb = JSON.parse(emb);
-    } catch {
-      // Supabase can return as {float: [...]} if inserted that way
-      emb = emb.replace(/[{}]/g, "").split(",").map(Number);
-    }
-  } else if (emb?.float) {
-    emb = emb.float; // Cohere’s structure
+function ProgressWidget({ workspaceId }) {
+  const [progress, setProgress] = useState({ time_spent_seconds: 0, completion_percent: 0 });
+  useEffect(() => { fetchProgress(); }, [workspaceId]);
+  async function fetchProgress() {
+    const { data } = await supabase.from('progress').select('time_spent_seconds, completion_percent').eq('workspace_id', workspaceId).order('last_active', { ascending: false }).limit(1);
+    if (data && data.length) setProgress(data[0]);
   }
-
-  return { ...r, score: cosine(qVec, emb) };
-});
-
-    scored.sort((a, b) => b.score - a.score);
-    const top = scored.slice(0, 6);
-
-// 4️⃣ Build RAG prompt (adjusted for quiz mode)
-const contextText = top
-  .map((t) => `Page ${t.page_number}: ${t.chunk_text}`)
-  .join("\n---\n");
-
-let prompt;
-
-if (mode === "quiz") {
-  prompt = `
-You are a professional quiz generator.
-
-Generate a quiz based strictly on the core concepts and topics covered in the uploaded workspace material.
-    Avoid administrative or irrelevant questions (e.g., about submission dates, file names, or formatting instructions).
-
-    The quiz should include a balanced mix of:
-    - Easy questions that test key definitions and basic understanding
-    - Medium questions that require short reasoning or explanations
-    - Hard questions that require analysis, comparison, or application of concepts
-
-    Randomly decide the total number of questions (between 8 and 12) 
-    and adjust the difficulty mix dynamically depending on the document content.
-
-
-Each question MUST be followed by its correct answer.
-Follow this exact format strictly:
-
-Q1: [Question text]
-A1: [Answer text]
-Q2: [Question text]
-A2: [Answer text]
-...
-
-Keep questions clear, concise, and based only on the provided content.
-
-Context:
-${contextText}
-`;
-} else {
-   prompt = `You are an intelligent study assistant. Use the context below to answer the question accurately and cite relevant pages.\n\nContext:\n${contextText}\n\nQuestion: ${question}\n\nAnswer:`;
-
-
+  return (
+    <div className="text-sm">
+      <div>Time spent: {(progress.time_spent_seconds || 0) / 60 >> 0} min</div>
+    </div>
+  );
 }
 
-    // 5️⃣ Call LLM via OpenRouter
-  
- // 5️⃣ Call LLM via OpenRouter
-let llmResp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-  method: "POST",
-  headers: {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-  },
-  body: JSON.stringify({
-    model: "mistralai/mistral-7b-instruct:free",
-    messages: [{ role: "user", content: prompt }],
-    max_tokens: 700,
-  }),
-});
-
-// fallback if rate limited
-if (llmResp.status === 429) {
-  console.log("⚠️ Rate limit hit, retrying with fallback model...");
-  llmResp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "openai/gpt-3.5-turbo", // fallback model
-      messages: [{ role: "user", content: prompt }],
-      max_tokens: 700,
-    }),
-  });
-}
-
-const llmJson = await llmResp.json();
-console.log("OpenRouter LLM response:", llmJson);
-
-// 🧩 Handle OpenRouter errors cleanly
-if (llmJson.error) {
-  console.error("OpenRouter Error:", llmJson.error);
-  return res.status(429).json({
-    error: llmJson.error.message || "OpenRouter rate limit exceeded",
-    type: "rate_limit",
-  });
-}
-
-
-    const answer =
-      llmJson.choices?.[0]?.message?.content || llmJson.choices?.[0]?.text;
-// 🧹 Clean up markdown-style formatting for a professional look
-let cleanAnswer = answer
-  ?.replace(/\*\*/g, "")        // remove **bold**
-  ?.replace(/__|_/g, "")        // remove _italic_
-  ?.replace(/```[\s\S]*?```/g, "") // remove code blocks
-  ?.replace(/`/g, "")           // remove inline code backticks
-  ?.replace(/\/\/.*/g, "")      // remove comment-like lines
-  ?.replace(/#+\s?/g, "")       // remove markdown headers
-  ?.replace(/\n{3,}/g, "\n\n")  // limit multiple newlines
-  ?.trim();
-
-    // 6️⃣ Save chat history
-   const chatTable = workspace_id ? "chats" : "quick_chats";
-    await supabase.from(chatTable).insert({
-      [parentIdField]: parentIdValue,
-      question,
-      answer: cleanAnswer,
-      sources: top.map((t) => ({
-        page: t.page_number,
-        excerpt: t.chunk_text.slice(0, 200),
-      })),
+function MotivationMini({ workspaceId }) {
+  const [input, setInput] = useState('');
+  const [reply, setReply] = useState(null);
+  async function sendMotivation() {
+    if (!input.trim()) return;
+    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ workspace_id: workspaceId, question: input, mode: 'motivate' })
     });
-
-    res.json({
-       answer: cleanAnswer,
-      sources: top.map((t) => ({
-        page: t.page_number,
-        excerpt: t.chunk_text.slice(0, 200),
-        score: t.score,
-      })),
-    });
-  } catch (err) {
-    console.error("Query error:", err);
-    res.status(500).json({ error: err.message });
+    const j = await res.json();
+    setReply(j.answer);
+    setInput('');
   }
-});
-// 🧘 Stress Mode - using free APIs
-app.post("/api/stress-mode", async (req, res) => {
-  try {
-    const { mood } = req.body;
-    let apiUrl = "";
-    let key = "message";
+  return (
+    <div>
+  {reply && (
+    <div className="mb-2 p-2 bg-green-100 text-gray-900 rounded text-sm">
+      {reply}
+    </div>
+  )}
+  <div className="flex gap-2">
+    <input
+      value={input}
+      onChange={e => setInput(e.target.value)}
+      className="flex-1 p-2 border rounded"
+      placeholder="How are you feeling?"
+    />
+    <button className="btn" onClick={sendMotivation}>Talk</button>
+  </div>
+</div>
 
-    if (mood === "funny") {
-      apiUrl = "https://v2.jokeapi.dev/joke/Any?type=single";
-    } else if (mood === "motivational") {
-      apiUrl = "https://zenquotes.io/api/random";
-    } else if (mood === "silly") {
-      apiUrl = "https://uselessfacts.jsph.pl/random.json?language=en";
-    }
-
-    const response = await fetch(apiUrl);
-    const data = await response.json();
-
-    let message = "";
-    if (mood === "funny") message = data.joke;
-    else if (mood === "motivational") message = data[0]?.q + " — " + data[0]?.a;
-    else if (mood === "silly") message = data.text;
-
-    res.json({ message });
-  } catch (error) {
-    console.error("Error fetching stress mode message:", error);
-    res.status(500).json({ message: "Failed to fetch stress mode message." });
-  }
-});
-// ✅ Vercel export (no app.listen)
-export default app;
+  );
+}
