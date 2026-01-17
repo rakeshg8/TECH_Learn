@@ -26,7 +26,9 @@ export default function WorkspaceList() {
       console.error('Error fetching workspaces:', error);
       return;
     }
-    setWorkspaces(data || []);
+    // ✅ Client-side authorization: only show workspaces owned by current user
+    const filtered = (data || []).filter(w => w.user_id === user.id);
+    setWorkspaces(filtered);
   }
 
   async function createWorkspace(e) {
