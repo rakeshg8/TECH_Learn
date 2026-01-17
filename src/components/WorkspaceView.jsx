@@ -69,6 +69,16 @@ async function fetchWorkspace() {
     setLoading(false);
     return null; // return null on error
   }
+  
+  // ✅ Client-side authorization check
+  if (data && data.user_id !== user.id) {
+    console.error('Unauthorized: user does not own this workspace');
+    alert('You do not have permission to access this workspace');
+    navigate('/workspaces');
+    setLoading(false);
+    return null;
+  }
+  
   setWorkspace(data);
   setLoading(false);
   return data; // return workspace so callers can await it
