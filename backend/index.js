@@ -234,7 +234,7 @@ ${contextText}
       return res.status(500).json({ error: "GEMINI_API_KEY is not set" });
     }
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
     
     let llmResp;
     try {
@@ -342,3 +342,4 @@ app.post("/api/stress-mode", async (req, res) => {
 });
 // ✅ Vercel export (no app.listen)
 export default app;
+
