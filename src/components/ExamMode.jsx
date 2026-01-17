@@ -19,7 +19,7 @@ export default function ExamMode() {
     setError(null);
 
     try {
-      const resp = await fetch("https://smart-study-buddy-six.vercel.app/api/query", {
+      const resp = await fetch("https://tech-learn-fsn6.vercel.app/api/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
