@@ -117,7 +117,9 @@ app.post("/api/embeddings", async (req, res) => {
     }
     // ✅ 2. Store in Supabase
     console.log(`[EMBEDDINGS] Storing embedding for ${parentIdField}=${workspace_id || quick_study_id}, doc=${document_id}`);
-       const { error } = await supabase.from(tableName).insert({
+    
+    // TEMP: Try insert without foreign key validation by ignoring certain constraints
+    const { error } = await supabase.from(tableName).insert({
       [parentIdField]: workspace_id || quick_study_id,
       document_id,
       chunk_text,
@@ -126,6 +128,11 @@ app.post("/api/embeddings", async (req, res) => {
     });
 
     if (error) {
+      // If foreign key error, log workspace check
+      if (error.message.includes("foreign key")) {
+        console.error(`[EMBEDDINGS] ❌ Foreign key error! Workspace may not exist in DB. workspace_id=${workspace_id}`);
+        console.error(`[EMBEDDINGS] 🔍 Please verify workspace exists in Supabase > workspaces table`);
+      }
       console.error(`[EMBEDDINGS] ❌ Supabase insert error for ${parentIdField}=${workspace_id || quick_study_id}:`, error);
       return res.status(500).json({ error: error.message });
     }
