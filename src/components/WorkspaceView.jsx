@@ -313,7 +313,7 @@ async function handleHandwrittenInput(e) {
   try {
 
     // call server
-    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
+    const res = await fetch('https://tech-learn-fsn6.vercel.app/api/query', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ workspace_id: id, question: uMsg.text })
@@ -554,7 +554,7 @@ function MotivationMini({ workspaceId }) {
   const [reply, setReply] = useState(null);
   async function sendMotivation() {
     if (!input.trim()) return;
-    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
+    const res = await fetch('https://tech-learn-fsn6.vercel.app/api/query', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ workspace_id: workspaceId, question: input, mode: 'motivate' })
@@ -583,4 +583,5 @@ function MotivationMini({ workspaceId }) {
 
   );
 }
+
 
