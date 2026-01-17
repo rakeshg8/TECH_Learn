@@ -49,6 +49,31 @@ const COHERE_API_KEY = process.env.COHERE_API_KEY;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+// Retry helper with exponential backoff for rate limits
+async function fetchWithRetry(url, options, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const resp = await fetch(url, options);
+      
+      // If rate limited, wait and retry
+      if (resp.status === 429) {
+        const waitTime = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
+        console.warn(`[RETRY] 429 rate limit on attempt ${attempt}, waiting ${waitTime}ms...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      return resp;
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      const waitTime = 1000 * attempt;
+      console.warn(`[RETRY] Network error on attempt ${attempt}, retrying in ${waitTime}ms...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+}
+
+
 app.get("/", (req, res) => res.send("Smart Study Buddy API running ✅"));
 
 app.post("/api/embeddings", async (req, res) => {
@@ -61,7 +86,7 @@ app.post("/api/embeddings", async (req, res) => {
 
   try {
     // ✅ 1. Get embeddings from Cohere (v2 API)
-    const embResp = await fetch("https://api.cohere.ai/v2/embed", {
+    const embResp = await fetchWithRetry("https://api.cohere.ai/v2/embed", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${COHERE_API_KEY}`,
@@ -127,7 +152,7 @@ app.post("/api/query", async (req, res) => {
     // 1️⃣ Create embedding for the question using Cohere
     console.log("[QUERY] Starting question embedding...");
     const embStart = Date.now();
-    const embResp = await fetch("https://api.cohere.ai/v1/embed", {
+    const embResp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${COHERE_API_KEY}`,
@@ -247,7 +272,7 @@ ${contextText}
     
     let llmResp;
     try {
-      llmResp = await fetch(geminiUrl, {
+      llmResp = await fetchWithRetry(geminiUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
