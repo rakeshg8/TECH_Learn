@@ -172,29 +172,49 @@ setUploadProgress(10); // show start progress
 
   const pages = await extractTextFromPDF(file); // returns [{pageNumber, text}]
   let totalChunks = 0;
-let processedChunks = 0;
-for (const p of pages) totalChunks += chunkText(p.text, 200).length;
+  let processedChunks = 0;
+  let failedChunks = 0;
+  for (const p of pages) totalChunks += chunkText(p.text, 200).length;
+  
   for (const p of pages) {
     const chunks = chunkText(p.text, 200);
     for (const chunk of chunks) {
-      // call server endpoint to create embedding and store vector
-      await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({
-          workspace_id: id,
-          document_id: doc.id,
-          page_number: p.pageNumber,
-          chunk_text: chunk
-        })
-      }).then(r => r.json()).catch(err => console.error('embedding error', err));
-       processedChunks++;
-    console.log(`Progress: ${Math.round((processedChunks / totalChunks) * 100)}%`);
+      try {
+        // call server endpoint to create embedding and store vector
+        const embRes = await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({
+            workspace_id: id,
+            document_id: doc.id,
+            page_number: p.pageNumber,
+            chunk_text: chunk
+          })
+        });
+        const embJson = await embRes.json();
+        if (!embRes.ok) {
+          console.error(`[UPLOAD] ❌ Embedding error for chunk (page ${p.pageNumber}):`, embJson.error);
+          failedChunks++;
+        } else {
+          console.log(`[UPLOAD] ✅ Embedded chunk from page ${p.pageNumber}`);
+        }
+      } catch (err) {
+        console.error(`[UPLOAD] ❌ Network error for chunk (page ${p.pageNumber}):`, err);
+        failedChunks++;
+      }
+      processedChunks++;
+      console.log(`Progress: ${Math.round((processedChunks / totalChunks) * 100)}%`);
     }
   }
+  
   setUploadProgress(100);
   setTimeout(() => setUploadProgress(0), 2000);
-  alert('File uploaded and processed (embeddings created).');
+  
+  if (failedChunks > 0) {
+    alert(`Upload completed with ${failedChunks} failed embeddings out of ${totalChunks}. Check console for details.`);
+  } else {
+    alert('File uploaded and processed (embeddings created).');
+  }
 }
 
 
@@ -544,4 +564,3 @@ function MotivationMini({ workspaceId }) {
 
   );
 }
-
