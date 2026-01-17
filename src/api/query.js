@@ -57,29 +57,22 @@ export default async function handler(req, res) {
     const contextText = top.map((t) => `Page ${t.page_number}: ${t.chunk_text}`).join("\n---\n");
     const prompt = `You are an intelligent study assistant. Use the following context (from user's uploaded notes) to answer the question. Provide citations (page numbers) where relevant.\n\nContext:\n${contextText}\n\nQuestion: ${question}\n\nAnswer clearly with sources [{page, excerpt}].`;
 
-    // 5️⃣ Call LLM via Google Gemini
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-    if (!GEMINI_API_KEY) {
-      return res.status(500).json({ error: "GEMINI_API_KEY not set" });
-    }
-
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-    const llmResp = await fetch(geminiUrl, {
+    // 5️⃣ Call LLM (still via OpenRouter or Mistral)
+    const llmResp = await fetch("https://api.openrouter.ai/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      },
       body: JSON.stringify({
-        contents: [
-          { role: "user", parts: [{ text: prompt }] }
-        ],
-        generationConfig: { maxOutputTokens: 700 }
-      })
+        model: "mistral-7b-instruct",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 700,
+      }),
     });
 
     const llmJson = await llmResp.json();
-    const answer = (llmJson.candidates?.[0]?.content?.parts || [])
-      .map(p => (typeof p.text === "string" ? p.text : ""))
-      .join("\n")
-      .trim();
+    const answer = llmJson.choices?.[0]?.message?.content ?? llmJson.choices?.[0]?.text;
 
     // 6️⃣ Save chat history
     await supabase.from("chats").insert({
@@ -105,4 +98,3 @@ export default async function handler(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
-

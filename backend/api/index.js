@@ -5,88 +5,30 @@ import dotenv from "dotenv";
 import cors from "cors";
 dotenv.config();
 const app = express();
-const allowedOrigins = [
-  "http://localhost:5173",
-   "http://localhost:5174",
-  "https://smart-study-buddy.vercel.app",
-  "https://tech-learn-fsn6.vercel.app",
-  "https://smart-study-buddy-yt58.vercel.app",
-  "https://tech-learn-sandy.vercel.app"
-];
+app.use(cors({
+  origin: ["http://localhost:5173", "https://smart-study-buddy-six.vercel.app","https://tech-learn-sandy.vercel.app"],
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 
-
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // Allow server-to-server and local tools (like curl, Postman)
-      if (!origin) return callback(null, true);
-
-      // ✅ Allow all Vercel preview URLs dynamically
-      if (
-        allowedOrigins.includes(origin) ||
-        /\.vercel\.app$/.test(origin)
-      ) {
-        return callback(null, true);
-      }
-
-      console.error("❌ CORS blocked for origin:", origin);
-      return callback(new Error("CORS not allowed for this origin"));
-    },
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  })
-);
-
-// ✅ Handle preflight requests
-app.options("*", cors());
 
 app.use(express.json());
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const COHERE_API_KEY = process.env.COHERE_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENROUTER_API_KEY=process.env.OPENROUTER_API_KEY
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// Retry helper with exponential backoff for rate limits
-async function fetchWithRetry(url, options, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const resp = await fetch(url, options);
-      
-      // If rate limited, wait and retry
-      if (resp.status === 429) {
-        const waitTime = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
-        console.warn(`[RETRY] 429 rate limit on attempt ${attempt}, waiting ${waitTime}ms...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
-      }
-      
-      return resp;
-    } catch (err) {
-      if (attempt === maxRetries) throw err;
-      const waitTime = 1000 * attempt;
-      console.warn(`[RETRY] Network error on attempt ${attempt}, retrying in ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-    }
-  }
-}
-
 
 app.get("/", (req, res) => res.send("Smart Study Buddy API running ✅"));
 
 app.post("/api/embeddings", async (req, res) => {
-  const {workspace_id,
-    quick_study_id,
-    document_id,
-    page_number,
-    chunk_text } = req.body;
+  const { workspace_id, document_id, page_number, chunk_text } = req.body;
   if (!chunk_text) return res.status(400).json({ error: "Missing chunk_text" });
 
   try {
     // ✅ 1. Get embeddings from Cohere (v2 API)
-    const embResp = await fetchWithRetry("https://api.cohere.ai/v2/embed", {
+    const embResp = await fetch("https://api.cohere.ai/v2/embed", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${COHERE_API_KEY}`,
@@ -110,21 +52,11 @@ app.post("/api/embeddings", async (req, res) => {
       console.error("Cohere embedding error:", embJson);
       return res.status(500).json({ error: "Failed to generate embedding" });
     }
- // 2️⃣ Determine target table
-    let tableName, parentIdField;
-    if (workspace_id) {
-      tableName = "embeddings";
-      parentIdField = "workspace_id";
-    } else if (quick_study_id) {
-      tableName = "quick_embeddings";
-      parentIdField = "quick_study_id";
-    } else {
-      return res.status(400).json({ error: "No workspace_id or quick_study_id provided" });
-    }
+
     // ✅ 2. Store in Supabase
-       const { error } = await supabase.from(tableName).insert({
-      [parentIdField]: workspace_id || quick_study_id,
+    const { error } = await supabase.from("embeddings").insert({
       document_id,
+      workspace_id,
       chunk_text,
       page_number,
       embedding,
@@ -141,18 +73,15 @@ app.post("/api/embeddings", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-console.log("GEMINI_API_KEY present:", !!process.env.GEMINI_API_KEY);
+console.log("OPENROUTER_API_KEY:", !!process.env.OPENROUTER_API_KEY);
 
 // ============ Query API ============
 app.post("/api/query", async (req, res) => {
-  const { workspace_id, quick_study_id, question, mode } = req.body;
-  const startTime = Date.now();
+  const { workspace_id, question } = req.body;
 
   try {
     // 1️⃣ Create embedding for the question using Cohere
-    console.log("[QUERY] Starting question embedding...");
-    const embStart = Date.now();
-    const embResp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
+    const embResp = await fetch("https://api.cohere.ai/v1/embed", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${COHERE_API_KEY}`,
@@ -167,30 +96,16 @@ app.post("/api/query", async (req, res) => {
 
     const embJson = await embResp.json();
     const qVec = embJson.embeddings?.float?.[0] || embJson.embeddings?.[0];
-    console.log(`[QUERY] Question embedding done in ${Date.now() - embStart}ms`);
     if (!qVec) throw new Error("Failed to generate question embedding");
-        // 2️⃣ Select correct embedding table
-// 2️⃣ Determine correct table, column, and parent ID
-const parentIdValue = workspace_id || quick_study_id;
-if (!parentIdValue) {
-  return res.status(400).json({ error: "No workspace_id or quick_study_id provided" });
-}
 
-const tableName = workspace_id ? "embeddings" : "quick_embeddings";
-const parentIdField = workspace_id ? "workspace_id" : "quick_study_id";
+    // 2️⃣ Fetch embeddings from Supabase
+    const { data: rows, error: fetchErr } = await supabase
+      .from("embeddings")
+      .select("id, chunk_text, page_number, embedding")
+      .eq("workspace_id", workspace_id);
 
-// 2️⃣ Fetch embeddings from Supabase
-console.log(`[QUERY] Fetching embeddings from ${tableName}...`);
-const dbStart = Date.now();
-const { data: rows, error: fetchErr } = await supabase
-  .from(tableName)
-  .select("id, chunk_text, page_number, embedding")
-  .eq(parentIdField, parentIdValue);
-
-console.log(`[QUERY] Fetched ${rows?.length} embeddings in ${Date.now() - dbStart}ms`);
-if (fetchErr) throw new Error(fetchErr.message);
-if (!rows?.length) throw new Error("No embeddings found for this workspace/study");
-
+    if (fetchErr) throw new Error(fetchErr.message);
+    if (!rows?.length) throw new Error("No embeddings found for workspace");
 
     // 3️⃣ Compute cosine similarity
     const dot = (a, b) => a.reduce((s, x, i) => s + x * b[i], 0);
@@ -218,115 +133,37 @@ const scored = rows.map((r) => {
     scored.sort((a, b) => b.score - a.score);
     const top = scored.slice(0, 6);
 
-// 4️⃣ Build RAG prompt (adjusted for quiz mode)
-const contextText = top
-  .map((t) => `Page ${t.page_number}: ${t.chunk_text}`)
-  .join("\n---\n");
+    // 4️⃣ Build RAG prompt
+    const contextText = top
+      .map((t) => `Page ${t.page_number}: ${t.chunk_text}`)
+      .join("\n---\n");
 
-let prompt;
+    const prompt = `You are an intelligent study assistant. Use the context below to answer the question accurately and cite relevant pages.\n\nContext:\n${contextText}\n\nQuestion: ${question}\n\nAnswer:`;
 
-if (mode === "quiz") {
-  prompt = `
-You are a professional quiz generator.
+    // 5️⃣ Call LLM via OpenRouter
+    const llmResp = await fetch("https://api.openrouter.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "mistral-7b-instruct",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 700,
+      }),
+    });
 
-Generate a quiz based strictly on the core concepts and topics covered in the uploaded workspace material.
-    Avoid administrative or irrelevant questions (e.g., about submission dates, file names, or formatting instructions).
-
-    The quiz should include a balanced mix of:
-    - Easy questions that test key definitions and basic understanding
-    - Medium questions that require short reasoning or explanations
-    - Hard questions that require analysis, comparison, or application of concepts
-
-    Randomly decide the total number of questions (between 8 and 12) 
-    and adjust the difficulty mix dynamically depending on the document content.
-
-
-Each question MUST be followed by its correct answer.
-Follow this exact format strictly:
-
-Q1: [Question text]
-A1: [Answer text]
-Q2: [Question text]
-A2: [Answer text]
-...
-
-Keep questions clear, concise, and based only on the provided content.
-
-Context:
-${contextText}
-`;
-} else {
-   prompt = `You are an intelligent study assistant. Use the context below to answer the question accurately and cite relevant pages.\n\nContext:\n${contextText}\n\nQuestion: ${question}\n\nAnswer:`;
-
-
-}
-
-    // 5️⃣ Call LLM via Google Gemini
-    if (!GEMINI_API_KEY) {
-      return res.status(500).json({ error: "GEMINI_API_KEY is not set" });
-    }
-
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-    console.log(`[QUERY] Calling Gemini LLM with model: gemini-2.0-flash`);
-    const geminiStart = Date.now();
-    
-    let llmResp;
-    try {
-      llmResp = await fetchWithRetry(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: prompt }],
-            },
-          ],
-          generationConfig: { maxOutputTokens: 700 },
-        }),
-      });
-    } catch (fetchErr) {
-      console.error("Gemini fetch error:", fetchErr);
-      return res.status(503).json({ error: "Gemini API temporarily unavailable" });
-    }
-
-    console.log(`[QUERY] Gemini response received in ${Date.now() - geminiStart}ms`);
     const llmJson = await llmResp.json();
-    console.log("Gemini LLM response:", llmJson);
-
-    // 🧩 Handle Gemini errors cleanly
-    if (!llmResp.ok) {
-      const msg = llmJson?.error?.message || "Gemini API call failed";
-      console.error("Gemini error response:", msg);
-      return res.status(llmResp.status || 500).json({ error: msg });
-    }
-
-    const answer = (llmJson.candidates?.[0]?.content?.parts || [])
-      .map((p) => (typeof p.text === "string" ? p.text : ""))
-      .join("\n")
-      .trim();
-    
-    if (!answer) {
-      console.error("No answer generated from Gemini");
-      return res.status(500).json({ error: "Failed to generate answer from LLM" });
-    }
-// 🧹 Clean up markdown-style formatting for a professional look
-let cleanAnswer = answer
-  ?.replace(/\*\*/g, "")        // remove **bold**
-  ?.replace(/__|_/g, "")        // remove _italic_
-  ?.replace(/```[\s\S]*?```/g, "") // remove code blocks
-  ?.replace(/`/g, "")           // remove inline code backticks
-  ?.replace(/\/\/.*/g, "")      // remove comment-like lines
-  ?.replace(/#+\s?/g, "")       // remove markdown headers
-  ?.replace(/\n{3,}/g, "\n\n")  // limit multiple newlines
-  ?.trim();
+    console.log("OpenRouter LLM response:", llmJson);
+    const answer =
+      llmJson.choices?.[0]?.message?.content || llmJson.choices?.[0]?.text;
 
     // 6️⃣ Save chat history
-   const chatTable = workspace_id ? "chats" : "quick_chats";
-    await supabase.from(chatTable).insert({
-      [parentIdField]: parentIdValue,
+    await supabase.from("chats").insert({
+      workspace_id,
       question,
-      answer: cleanAnswer,
+      answer,
       sources: top.map((t) => ({
         page: t.page_number,
         excerpt: t.chunk_text.slice(0, 200),
@@ -334,47 +171,19 @@ let cleanAnswer = answer
     });
 
     res.json({
-       answer: cleanAnswer,
+      answer,
       sources: top.map((t) => ({
         page: t.page_number,
         excerpt: t.chunk_text.slice(0, 200),
         score: t.score,
       })),
     });
-    console.log(`[QUERY] Total request time: ${Date.now() - startTime}ms`);
   } catch (err) {
-    console.error("Query error:", err, `(after ${Date.now() - startTime}ms)`);
+    console.error("Query error:", err);
     res.status(500).json({ error: err.message });
   }
 });
-// 🧘 Stress Mode - using free APIs
-app.post("/api/stress-mode", async (req, res) => {
-  try {
-    const { mood } = req.body;
-    let apiUrl = "";
-    let key = "message";
 
-    if (mood === "funny") {
-      apiUrl = "https://v2.jokeapi.dev/joke/Any?type=single";
-    } else if (mood === "motivational") {
-      apiUrl = "https://zenquotes.io/api/random";
-    } else if (mood === "silly") {
-      apiUrl = "https://uselessfacts.jsph.pl/random.json?language=en";
-    }
 
-    const response = await fetch(apiUrl);
-    const data = await response.json();
-
-    let message = "";
-    if (mood === "funny") message = data.joke;
-    else if (mood === "motivational") message = data[0]?.q + " — " + data[0]?.a;
-    else if (mood === "silly") message = data.text;
-
-    res.json({ message });
-  } catch (error) {
-    console.error("Error fetching stress mode message:", error);
-    res.status(500).json({ message: "Failed to fetch stress mode message." });
-  }
-});
 // ✅ Vercel export (no app.listen)
 export default app;

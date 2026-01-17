@@ -69,16 +69,6 @@ async function fetchWorkspace() {
     setLoading(false);
     return null; // return null on error
   }
-  
-  // ✅ Client-side authorization check
-  if (data && data.user_id !== user.id) {
-    console.error('Unauthorized: user does not own this workspace');
-    alert('You do not have permission to access this workspace');
-    navigate('/workspaces');
-    setLoading(false);
-    return null;
-  }
-  
   setWorkspace(data);
   setLoading(false);
   return data; // return workspace so callers can await it
@@ -182,54 +172,25 @@ setUploadProgress(10); // show start progress
 
   const pages = await extractTextFromPDF(file); // returns [{pageNumber, text}]
   let totalChunks = 0;
-  let processedChunks = 0;
-  let failedChunks = 0;
-  for (const p of pages) totalChunks += chunkText(p.text, 200).length;
-  
+let processedChunks = 0;
+for (const p of pages) totalChunks += chunkText(p.text, 200).length;
   for (const p of pages) {
     const chunks = chunkText(p.text, 200);
     for (const chunk of chunks) {
-      try {
-        // Add timeout handling (90 second timeout for slow Cohere API)
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 90000);
-        
-        const response = await fetch('https://tech-learn-fsn6.vercel.app/api/embeddings', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
-            workspace_id: id,
-            document_id: doc.id,
-            page_number: p.pageNumber,
-            chunk_text: chunk
-          }),
-          signal: controller.signal
-        });
-        
-        clearTimeout(timeoutId);
-        
-        if (!response.ok) {
-          console.error(`Embedding failed with status ${response.status}`);
-          failedChunks++;
-          continue;
-        }
-        
-        await response.json();
-      } catch (err) {
-        console.error('Embedding error:', err.message);
-        if (err.name === 'AbortError') {
-          console.warn('Request timeout - backend processing is slow');
-        }
-        failedChunks++;
-      }
-      
-      processedChunks++;
-      console.log(`Progress: ${Math.round((processedChunks / totalChunks) * 100)}%`);
+      // call server endpoint to create embedding and store vector
+      await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({
+          workspace_id: id,
+          document_id: doc.id,
+          page_number: p.pageNumber,
+          chunk_text: chunk
+        })
+      }).then(r => r.json()).catch(err => console.error('embedding error', err));
+       processedChunks++;
+    console.log(`Progress: ${Math.round((processedChunks / totalChunks) * 100)}%`);
     }
-  }
-  
-  if (failedChunks > 0) {
-    console.warn(`${failedChunks} chunks failed to process`);
   }
   setUploadProgress(100);
   setTimeout(() => setUploadProgress(0), 2000);
@@ -278,7 +239,7 @@ async function handleHandwrittenInput(e) {
   const chunks = chunkText(extractedText, 200);
   let processed = 0;
   for (const chunk of chunks) {
-    await fetch('https://tech-learn-fsn6.vercel.app/api/embeddings', {
+    await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -313,7 +274,7 @@ async function handleHandwrittenInput(e) {
   try {
 
     // call server
-    const res = await fetch('https://tech-learn-fsn6.vercel.app/api/query', {
+    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ workspace_id: id, question: uMsg.text })
@@ -415,7 +376,7 @@ async function handleHandwrittenInput(e) {
 >
   <div
     className="text-gray-800"
-    dangerouslySetInnerHTML={{ __html: (m.text || '').replace(/\n/g, '<br/>') }}
+    dangerouslySetInnerHTML={{ __html: m.text.replace(/\n/g, '<br/>') }}
   />
 </div>
 
@@ -446,7 +407,7 @@ async function handleHandwrittenInput(e) {
               <h3 className="font-semibold mb-2">Exam Mode</h3>
               <p className="text-sm text-gray-600 mb-3">Generate timed quiz from this workspace (use the "Generate Quiz" button).</p>
               <button className="btn" onClick={async () => {
-                const resp = await fetch('https://tech-learn-fsn6.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::generate_quiz::', mode: 'quiz' }) });
+                const resp = await fetch('https://smart-study-buddy-six.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::generate_quiz::', mode: 'quiz' }) });
                 const j = await resp.json();
                 alert('Quiz generated in chat. Open Chat tab to view questions.');
                 setActiveTab('chat');
@@ -460,7 +421,7 @@ async function handleHandwrittenInput(e) {
               <h3 className="font-semibold mb-2">Smart Notes Summarizer</h3>
               <p className="text-sm text-gray-600 mb-3">Summarize uploaded notes or OCR images.</p>
               <button className="btn" onClick={async () => {
-                const resp = await fetch('https://tech-learn-fsn6.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::summarize_notes::', mode: 'summarize' }) });
+                const resp = await fetch('https://smart-study-buddy-six.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::summarize_notes::', mode: 'summarize' }) });
                 const j = await resp.json();
                 setActiveTab('chat'); // show summary in chat
                 setMessages(prev => [...prev, { role:'assistant', text: j.answer }]);
@@ -473,7 +434,7 @@ async function handleHandwrittenInput(e) {
               <h3 className="font-semibold mb-2">Concept Evolution Tracker</h3>
               <p className="text-sm text-gray-600">Compare how your understanding changed as you added documents.</p>
               <button className="btn" onClick={async () => {
-                const resp = await fetch('https://tech-learn-fsn6.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::concept_evolution::', mode: 'concept' }) });
+                const resp = await fetch('https://smart-study-buddy-six.vercel.app/api/query', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ workspace_id: id, question: '::concept_evolution::', mode: 'concept' }) });
                 const j = await resp.json();
                 setActiveTab('chat');
                 setMessages(prev => [...prev, { role:'assistant', text: j.answer }]);
@@ -554,7 +515,7 @@ function MotivationMini({ workspaceId }) {
   const [reply, setReply] = useState(null);
   async function sendMotivation() {
     if (!input.trim()) return;
-    const res = await fetch('https://tech-learn-fsn6.vercel.app/api/query', {
+    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ workspace_id: workspaceId, question: input, mode: 'motivate' })
@@ -583,5 +544,3 @@ function MotivationMini({ workspaceId }) {
 
   );
 }
-
-

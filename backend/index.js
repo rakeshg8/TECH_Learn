@@ -9,7 +9,7 @@ const allowedOrigins = [
   "http://localhost:5173",
    "http://localhost:5174",
   "https://smart-study-buddy.vercel.app",
-  "https://tech-learn-fsn6.vercel.app",
+  "https://smart-study-buddy-six.vercel.app",
   "https://smart-study-buddy-yt58.vercel.app",
   "https://tech-learn-sandy.vercel.app"
 ];
@@ -46,33 +46,8 @@ app.use(express.json());
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const COHERE_API_KEY = process.env.COHERE_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const OPENROUTER_API_KEY=process.env.OPENROUTER_API_KEY
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-
-// Retry helper with exponential backoff for rate limits
-async function fetchWithRetry(url, options, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const resp = await fetch(url, options);
-      
-      // If rate limited, wait and retry
-      if (resp.status === 429) {
-        const waitTime = Math.pow(2, attempt - 1) * 1000; // 1s, 2s, 4s
-        console.warn(`[RETRY] 429 rate limit on attempt ${attempt}, waiting ${waitTime}ms...`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-        continue;
-      }
-      
-      return resp;
-    } catch (err) {
-      if (attempt === maxRetries) throw err;
-      const waitTime = 1000 * attempt;
-      console.warn(`[RETRY] Network error on attempt ${attempt}, retrying in ${waitTime}ms...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-    }
-  }
-}
-
 
 app.get("/", (req, res) => res.send("Smart Study Buddy API running ✅"));
 
@@ -86,7 +61,7 @@ app.post("/api/embeddings", async (req, res) => {
 
   try {
     // ✅ 1. Get embeddings from Cohere (v2 API)
-    const embResp = await fetchWithRetry("https://api.cohere.ai/v2/embed", {
+    const embResp = await fetch("https://api.cohere.ai/v2/embed", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${COHERE_API_KEY}`,
@@ -141,18 +116,15 @@ app.post("/api/embeddings", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-console.log("GEMINI_API_KEY present:", !!process.env.GEMINI_API_KEY);
+console.log("OPENROUTER_API_KEY:", !!process.env.OPENROUTER_API_KEY);
 
 // ============ Query API ============
 app.post("/api/query", async (req, res) => {
   const { workspace_id, quick_study_id, question, mode } = req.body;
-  const startTime = Date.now();
 
   try {
     // 1️⃣ Create embedding for the question using Cohere
-    console.log("[QUERY] Starting question embedding...");
-    const embStart = Date.now();
-    const embResp = await fetchWithRetry("https://api.cohere.ai/v1/embed", {
+    const embResp = await fetch("https://api.cohere.ai/v1/embed", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${COHERE_API_KEY}`,
@@ -167,7 +139,6 @@ app.post("/api/query", async (req, res) => {
 
     const embJson = await embResp.json();
     const qVec = embJson.embeddings?.float?.[0] || embJson.embeddings?.[0];
-    console.log(`[QUERY] Question embedding done in ${Date.now() - embStart}ms`);
     if (!qVec) throw new Error("Failed to generate question embedding");
         // 2️⃣ Select correct embedding table
 // 2️⃣ Determine correct table, column, and parent ID
@@ -180,14 +151,11 @@ const tableName = workspace_id ? "embeddings" : "quick_embeddings";
 const parentIdField = workspace_id ? "workspace_id" : "quick_study_id";
 
 // 2️⃣ Fetch embeddings from Supabase
-console.log(`[QUERY] Fetching embeddings from ${tableName}...`);
-const dbStart = Date.now();
 const { data: rows, error: fetchErr } = await supabase
   .from(tableName)
   .select("id, chunk_text, page_number, embedding")
   .eq(parentIdField, parentIdValue);
 
-console.log(`[QUERY] Fetched ${rows?.length} embeddings in ${Date.now() - dbStart}ms`);
 if (fetchErr) throw new Error(fetchErr.message);
 if (!rows?.length) throw new Error("No embeddings found for this workspace/study");
 
@@ -261,55 +229,54 @@ ${contextText}
 
 }
 
-    // 5️⃣ Call LLM via Google Gemini
-    if (!GEMINI_API_KEY) {
-      return res.status(500).json({ error: "GEMINI_API_KEY is not set" });
-    }
+    // 5️⃣ Call LLM via OpenRouter
+  
+ // 5️⃣ Call LLM via OpenRouter
+let llmResp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+  },
+  body: JSON.stringify({
+    model: "mistralai/mistral-7b-instruct:free",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 700,
+  }),
+});
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`;
-    console.log(`[QUERY] Calling Gemini LLM with model: gemini-2.0-flash`);
-    const geminiStart = Date.now();
-    
-    let llmResp;
-    try {
-      llmResp = await fetchWithRetry(geminiUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: prompt }],
-            },
-          ],
-          generationConfig: { maxOutputTokens: 700 },
-        }),
-      });
-    } catch (fetchErr) {
-      console.error("Gemini fetch error:", fetchErr);
-      return res.status(503).json({ error: "Gemini API temporarily unavailable" });
-    }
+// fallback if rate limited
+if (llmResp.status === 429) {
+  console.log("⚠️ Rate limit hit, retrying with fallback model...");
+  llmResp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "openai/gpt-3.5-turbo", // fallback model
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 700,
+    }),
+  });
+}
 
-    console.log(`[QUERY] Gemini response received in ${Date.now() - geminiStart}ms`);
-    const llmJson = await llmResp.json();
-    console.log("Gemini LLM response:", llmJson);
+const llmJson = await llmResp.json();
+console.log("OpenRouter LLM response:", llmJson);
 
-    // 🧩 Handle Gemini errors cleanly
-    if (!llmResp.ok) {
-      const msg = llmJson?.error?.message || "Gemini API call failed";
-      console.error("Gemini error response:", msg);
-      return res.status(llmResp.status || 500).json({ error: msg });
-    }
+// 🧩 Handle OpenRouter errors cleanly
+if (llmJson.error) {
+  console.error("OpenRouter Error:", llmJson.error);
+  return res.status(429).json({
+    error: llmJson.error.message || "OpenRouter rate limit exceeded",
+    type: "rate_limit",
+  });
+}
 
-    const answer = (llmJson.candidates?.[0]?.content?.parts || [])
-      .map((p) => (typeof p.text === "string" ? p.text : ""))
-      .join("\n")
-      .trim();
-    
-    if (!answer) {
-      console.error("No answer generated from Gemini");
-      return res.status(500).json({ error: "Failed to generate answer from LLM" });
-    }
+
+    const answer =
+      llmJson.choices?.[0]?.message?.content || llmJson.choices?.[0]?.text;
 // 🧹 Clean up markdown-style formatting for a professional look
 let cleanAnswer = answer
   ?.replace(/\*\*/g, "")        // remove **bold**
@@ -341,9 +308,8 @@ let cleanAnswer = answer
         score: t.score,
       })),
     });
-    console.log(`[QUERY] Total request time: ${Date.now() - startTime}ms`);
   } catch (err) {
-    console.error("Query error:", err, `(after ${Date.now() - startTime}ms)`);
+    console.error("Query error:", err);
     res.status(500).json({ error: err.message });
   }
 });
