@@ -43,7 +43,19 @@ async function fetchStudy() {
     .select("*")
     .eq("id", id)
     .single();
-  if (!error) setStudy(data);
+  if (error) {
+    console.error('Error fetching study:', error);
+    return;
+  }
+  
+  // ✅ Client-side authorization check
+  if (data && data.user_id !== user.id) {
+    console.error('Unauthorized: user does not own this study');
+    navigate('/quickstudy');
+    return;
+  }
+  
+  setStudy(data);
 }
 
   async function fetchChatHistory(studyId = quickStudyId) {
