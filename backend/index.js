@@ -9,10 +9,9 @@ const allowedOrigins = [
   "http://localhost:5173",
    "http://localhost:5174",
   "https://smart-study-buddy.vercel.app",
-  "https://smart-study-buddy-six.vercel.app",
+  "https://tech-learn-fsn6.vercel.app",
   "https://smart-study-buddy-yt58.vercel.app",
-  "https://tech-learn-sandy.vercel.app",
-   "https://tech-learn-fsn6.vercel.app"
+  "https://tech-learn-sandy.vercel.app"
 ];
 
 
@@ -330,5 +329,3 @@ app.post("/api/stress-mode", async (req, res) => {
 });
 // ✅ Vercel export (no app.listen)
 export default app;
-
-
