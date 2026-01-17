@@ -127,26 +127,49 @@ function cleanText(text) {
 
     // 4️⃣ Extract PDF text, chunk, and send embeddings
     const pages = await extractTextFromPDF(file);
-    let totalChunks = 0, processedChunks = 0;
+    let totalChunks = 0, processedChunks = 0, failedChunks = 0;
     for (const p of pages) totalChunks += chunkText(p.text, 200).length;
+    
     for (const p of pages) {
       const chunks = chunkText(p.text, 200).map(c => cleanText(c)).filter(c => c.length > 0);
       for (const chunk of chunks) {
-        await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({
-            quick_study_id: studyId,
-            document_id: doc.id,
-            page_number: p.pageNumber,
-            chunk_text: chunk
-          })
-        }).catch(err => console.error(err));
+        try {
+          // Add timeout handling (30 second timeout)
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000);
+          
+          const response = await fetch('https://tech-learn-fsn6.vercel.app/api/embeddings', {
+            method: 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+              quick_study_id: studyId,
+              document_id: doc.id,
+              page_number: p.pageNumber,
+              chunk_text: chunk
+            }),
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          
+          if (!response.ok) {
+            console.error(`Embedding failed with status ${response.status}`);
+            failedChunks++;
+          }
+        } catch (err) {
+          console.error('Embedding error:', err.message);
+          failedChunks++;
+        }
+        
         processedChunks++;
         setUploadProgress(50 + Math.round((processedChunks / totalChunks) * 50));
       }
     }
+    
     setUploadProgress(100);
+    if (failedChunks > 0) {
+      alert(`Upload complete, but ${failedChunks} chunks failed. You can still use the document.`);
+    }
   }
 async function handleHandwrittenInput(e) {
   const file = e.target.files[0];
@@ -176,7 +199,7 @@ async function handleHandwrittenInput(e) {
   // Split and send chunks to embeddings
   const chunks = chunkText(extractedText, 200);
   for (let i = 0; i < chunks.length; i++) {
-    await fetch('https://smart-study-buddy-six.vercel.app/api/embeddings', {
+    await fetch('https://tech-learn-fsn6.vercel.app/api/embeddings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -215,7 +238,7 @@ async function handleHandwrittenInput(e) {
       text: uMsg.text,
       ts: uMsg.ts
     });
-    const res = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
+    const res = await fetch('https://tech-learn-fsn6.vercel.app/api/query', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ quick_study_id: quickStudyId, question: uMsg.text })
@@ -376,7 +399,7 @@ async function handleHandwrittenInput(e) {
       <h3 className="font-semibold mb-2">Exam Mode</h3>
       <p className="text-sm text-gray-400 mb-3">Generate a timed quiz from your Quick Study.</p>
       <button className="btn" onClick={async () => {
-        const resp = await fetch('https://smart-study-buddy-six.vercel.app/api/query', {
+        const resp = await fetch('https://tech-learn-fsn6.vercel.app/api/query', {
           method: 'POST',
           headers: {'Content-Type':'application/json'},
           body: JSON.stringify({ quick_study_id: quickStudyId, question: '::generate_quiz::', mode: 'quiz' })
