@@ -23,7 +23,11 @@ const [newTitle, setNewTitle] = useState('');
       .eq("user_id", user.id)
       .order("created_at", { ascending: false });
     if (error) console.error(error);
-    else setStudies(data);
+    else {
+      // ✅ Client-side authorization: only show studies owned by current user
+      const filtered = (data || []).filter(s => s.user_id === user.id);
+      setStudies(filtered);
+    }
   }
 
   // 🟢 Function to create a new Quick Study with title prompt
