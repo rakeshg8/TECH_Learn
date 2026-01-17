@@ -376,7 +376,7 @@ async function handleHandwrittenInput(e) {
 >
   <div
     className="text-gray-800"
-    dangerouslySetInnerHTML={{ __html: m.text.replace(/\n/g, '<br/>') }}
+    dangerouslySetInnerHTML={{ __html: (m.text || '').replace(/\n/g, '<br/>') }}
   />
 </div>
 
@@ -544,3 +544,4 @@ function MotivationMini({ workspaceId }) {
 
   );
 }
+
