@@ -135,7 +135,10 @@ async function stopTimerAndSave() {
 async function handleFileInput(e) {
   const file = e.target.files[0];
   if (!file) return;
-setUploadProgress(10); // show start progress
+  setUploadProgress(10); // show start progress
+  
+  console.log(`[UPLOAD] Starting upload for workspace_id=${id}`);
+  
   // Ensure workspace is loaded and owned
   let ws = workspace;
   if (!ws) {
@@ -149,6 +152,8 @@ setUploadProgress(10); // show start progress
     alert('You cannot upload files to a workspace you do not own.');
     return;
   }
+  
+  console.log(`[UPLOAD] Workspace verified: id=${id}, user_id=${user.id}`);
 
   // 1. upload raw file to Supabase storage
   const ext = file.name.split('.').pop();
