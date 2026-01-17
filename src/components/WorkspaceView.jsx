@@ -190,9 +190,9 @@ setUploadProgress(10); // show start progress
     const chunks = chunkText(p.text, 200);
     for (const chunk of chunks) {
       try {
-        // Add timeout handling (30 second timeout)
+        // Add timeout handling (90 second timeout for slow Cohere API)
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000);
+        const timeoutId = setTimeout(() => controller.abort(), 90000);
         
         const response = await fetch('https://tech-learn-fsn6.vercel.app/api/embeddings', {
           method: 'POST',
@@ -211,9 +211,15 @@ setUploadProgress(10); // show start progress
         if (!response.ok) {
           console.error(`Embedding failed with status ${response.status}`);
           failedChunks++;
+          continue;
         }
+        
+        await response.json();
       } catch (err) {
         console.error('Embedding error:', err.message);
+        if (err.name === 'AbortError') {
+          console.warn('Request timeout - backend processing is slow');
+        }
         failedChunks++;
       }
       
