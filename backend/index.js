@@ -235,19 +235,26 @@ ${contextText}
     }
 
     const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-    const llmResp = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: prompt }],
-          },
-        ],
-        generationConfig: { maxOutputTokens: 700 },
-      }),
-    });
+    
+    let llmResp;
+    try {
+      llmResp = await fetch(geminiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: "user",
+              parts: [{ text: prompt }],
+            },
+          ],
+          generationConfig: { maxOutputTokens: 700 },
+        }),
+      });
+    } catch (fetchErr) {
+      console.error("Gemini fetch error:", fetchErr);
+      return res.status(503).json({ error: "Gemini API temporarily unavailable" });
+    }
 
     const llmJson = await llmResp.json();
     console.log("Gemini LLM response:", llmJson);
@@ -255,6 +262,7 @@ ${contextText}
     // 🧩 Handle Gemini errors cleanly
     if (!llmResp.ok) {
       const msg = llmJson?.error?.message || "Gemini API call failed";
+      console.error("Gemini error response:", msg);
       return res.status(llmResp.status || 500).json({ error: msg });
     }
 
@@ -262,6 +270,11 @@ ${contextText}
       .map((p) => (typeof p.text === "string" ? p.text : ""))
       .join("\n")
       .trim();
+    
+    if (!answer) {
+      console.error("No answer generated from Gemini");
+      return res.status(500).json({ error: "Failed to generate answer from LLM" });
+    }
 // 🧹 Clean up markdown-style formatting for a professional look
 let cleanAnswer = answer
   ?.replace(/\*\*/g, "")        // remove **bold**
